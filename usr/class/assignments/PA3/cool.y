@@ -237,7 +237,7 @@
     /* feature ::= ID : TYPE [ <- expr ]  */
     attr_feature : OBJECTID ':' TYPEID
             {
-                $$ = attr($1, $3, nullptr);
+                $$ = attr($1, $3, no_expr());
             }
         | OBJECTID ':' TYPEID ASSIGN expression
             {
@@ -271,7 +271,7 @@
         // expr[@TYPE].ID( [ expr [[, expr]]∗ ] ) 
         | expression '.' OBJECTID '(' ')'
             {
-                $$ = dispatch($1, $3, nullptr);
+                $$ = dispatch($1, $3, nil_Expressions());
             }
         | expression '.' OBJECTID '(' expression_list ')'
             {
@@ -279,7 +279,7 @@
             }
         | expression '@' TYPEID OBJECTID '(' ')'
             {
-                $$ = static_dispatch($1, $3, $4, nullptr);
+                $$ = static_dispatch($1, $3, $4, nil_Expressions());
             }
         | expression '@' TYPEID OBJECTID '(' expression_list ')'
             {
@@ -288,11 +288,11 @@
         // ID( [ expr [[, expr]]∗ ] ) 
         | OBJECTID '(' ')'
             {
-                $$ = dispatch(nullptr, $1, nullptr);
+                $$ = dispatch(no_expr(), $1, nil_Expressions());
             }
         | OBJECTID '(' expression_list ')'
             {
-                $$ = dispatch(nullptr, $1, $3);
+                $$ = dispatch(no_expr(), $1, $3);
             }
         //  if expr then expr else expr fi 
         | IF expression THEN expression ELSE expression FI

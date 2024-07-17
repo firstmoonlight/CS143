@@ -216,10 +216,8 @@
             {
                 $$ = append_Features($1, single_Features($2));
             }
-        | feature_list error ';'
-            {
-                $$ = $1;
-            }
+        | error ';'
+            {}
     ;
 
     /*  feature ::= ID( [ formal [[, formal]]∗ ] ) : TYPE { expr }  */
@@ -277,22 +275,22 @@
             {
                 $$ = dispatch($1, $3, $5);
             }
-        | expression '@' TYPEID OBJECTID '(' ')'
+        | expression '@' TYPEID '.' OBJECTID '(' ')'
             {
-                $$ = static_dispatch($1, $3, $4, nil_Expressions());
+                $$ = static_dispatch($1, $3, $5, nil_Expressions());
             }
-        | expression '@' TYPEID OBJECTID '(' expression_list ')'
+        | expression '@' TYPEID '.' OBJECTID '(' expression_list ')'
             {
-                $$ = static_dispatch($1, $3, $4, $6);
+                $$ = static_dispatch($1, $3, $5, $7);
             }
         // ID( [ expr [[, expr]]∗ ] ) 
         | OBJECTID '(' ')'
             {
-                $$ = dispatch(no_expr(), $1, nil_Expressions());
+                $$ = dispatch(object(idtable.add_string("self")), $1, nil_Expressions());
             }
         | OBJECTID '(' expression_list ')'
             {
-                $$ = dispatch(no_expr(), $1, $3);
+                $$ = dispatch(object(idtable.add_string("self")), $1, $3);
             }
         //  if expr then expr else expr fi 
         | IF expression THEN expression ELSE expression FI
@@ -419,6 +417,8 @@
             {
                 $$ = append_Expressions($1, single_Expressions($2));
             }
+        | error ';'
+            {}
     ;
 
     let_ : OBJECTID ':' TYPEID IN expression

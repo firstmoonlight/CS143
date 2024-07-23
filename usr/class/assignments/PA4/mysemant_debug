@@ -1,0 +1,13 @@
+#!/bin/bash
+if [ $1 = "-d" ]; then
+  shift
+  lexer $* | ./parser $* > parser.out
+  cat parser.out
+  gdb -ex "set args $* < parser.out" ./semant
+# sadly i can't find the source to build the real reference parser
+# elif [ $1 = "-r" ]; then
+#  shift
+#  /usr/class/cs143/bin/reflexer $* | /usr/class/cs143/bin/refparser $* 
+else
+    ./lexer $* | ./parser $* | ./semant $* 
+fi

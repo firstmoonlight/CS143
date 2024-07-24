@@ -1,0 +1,3 @@
+./trickyatdispatch2.test:10: Error! static dispatch class is not an ancestor.
+./trickyatdispatch2.test:10: Error! return type is not ancestor of method body.
+Compilation halted due to static semantic errors.

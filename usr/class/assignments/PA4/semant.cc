@@ -91,14 +91,28 @@ ClassTable::ClassTable(Classes classes) : semant_errors(0) , error_stream(cerr) 
     install_basic_classes(classes);
 
     // class can only be defined in program, so there is no nested class
+    bool ans = true;
     for(int i = classes->first(); classes->more(i); i = classes->next(i)) {
-        add_to_class_table(classes->nth(i));
+        if (!add_to_class_table(classes->nth(i))) ans = false;
     }
+    
+    if (!ans) return;
 
     /* check whether Main class is defined. */
     if (class_table.find(Main) == class_table.end()) {
         semant_error() << "Class Main is not defined." << std::endl;
+        return;
     }
+
+    // check inheritance
+    for (int i = classes->first(); classes->more(i); i = classes->next(i)) {
+        Symbol cls = classes->nth(i)->get_name();;
+        Symbol parent = classes->nth(i)->get_parent();
+        if (class_table.find(parent) == class_table.end()) {
+            semant_error(classes->nth(i)) << "Class " << cls << " inherits from an undefined class " << parent << " ." << std::endl;
+        }
+    }
+
 }
 
 void ClassTable::install_basic_classes(Classes classes) {
@@ -242,19 +256,23 @@ ostream& ClassTable::semant_error()
 
 // start
 // add class to classtable
-void ClassTable::add_to_class_table(Class_ c) {
+bool ClassTable::add_to_class_table(Class_ c) {
     Symbol name = c->get_name();
     Symbol parent = c->get_parent();
     if ((parent == Bool) || (parent == Str) || (parent == SELF_TYPE)){
-        semant_error(c) << name << "Can't inherent from " << parent << "!" << endl; 
+        semant_error(c) << name << " Can't inherent from " << parent << "!" << endl; 
+        return false;
     }else if (name == SELF_TYPE){
-        semant_error(c) << "Can't define SELF_TYPE!" << endl;
+        semant_error(c) << " Can't define SELF_TYPE!" << endl;
+        return false;
     }else if ((class_table.find(name) != class_table.end())){
-        semant_error(c) << "Can't be defined multiple times!" << endl;
+        semant_error(c) << " Can't be defined multiple times!" << endl;
+        return false;
     }else{
         class_table[name] = c;
         inherit_graph[parent].emplace_back(name);
         der_2_base[name] = parent;
+        return true;
     }
 }
 
@@ -290,16 +308,61 @@ bool ClassTable::has_cycle() {
     return dfs(Object);
 }
 
-bool ClassTable::is_sub_class(Symbol s1, Symbol s2) {
-    if (s2 == Object){
+// ============================
+// check whether ancestor is a (direct or indirect) ancestor of child
+// 
+// input:
+//     Symbol ancestor, Symbol child
+// 
+// output:
+//     bool
+// 
+// note on SELF_TYPE:
+//     When some object o in class C is of SELF_TYPE,
+//     it means the real(dynamic) type of o might be C,
+//     or any subclass of C, depending on the dynamic type of the containing object.
+//     Then, how do we check the inheritance in case of SELF_TYPE?
+// 
+//     1. ancestor = child = SELF_TYPE
+//        In this case, we know that the 2 objects have the same dynamic type.
+// 
+//     2. ancestor = A, child = SELF_TYPE
+//        In this case, we don't know what the dynamic type of child.
+//        So we just assume child is C.
+//        If we know that C <= A, then even child's dynamic type isn't C,
+//        it can only be a subclass of C. so we are still safe.
+// 
+//        However, this makes the type checker more strict than the real world.
+//        Consider this scenario:
+//        A < C, and child's dynamic type is A (but the type check can't know this!)
+//        then the type checker will complain, even though the program should work.
+// 
+//     3. ancestor = SELF_TYPE, child = A
+//        In this case, we have to say that it doesn't type check in any case.
+//        Even if A <= C, ancestor's dynamic type could be a subclass of C,
+//        which might not be an ancestor of A.
+// 
+//     To sum up, the type checker is more strict than the real world: it might reject
+//     some valid programs, but it will not tolerate any invalid program.
+// 
+bool ClassTable::is_sub_class(Symbol child, Symbol ancestor, Class_ cur_cls) {
+    if (ancestor == Object){
         return true;
     }
 
-    while (der_2_base.find(s1) != der_2_base.end()){
-        if (s1 == s2){
+    if (ancestor == SELF_TYPE) {
+        return child == SELF_TYPE;
+    }
+
+    if (child == SELF_TYPE) {
+        child = cur_cls->get_name();
+    }
+
+    while (der_2_base.find(child) != der_2_base.end()){
+        if (child == ancestor){
             return true;
         }
-        s1 = der_2_base[s1];
+        child = der_2_base[child];
     }
 
     return false;
@@ -502,15 +565,15 @@ Symbol TypeCheckVisitor::visit(program_class& cls) {
     Classes classes = cls.get_classes();
     // because method can only be declared in classed, and can be referenced any where
     // so there is only one method scope for each class, and the scope will not be exit utill the program is end
-    for(int i = classes->first(); classes->more(i); i = classes->next(i)) {
-        gather_method(classes->nth(i));
+    for(auto it = cls_table.class_table.begin(); it != cls_table.class_table.end(); ++it) {
+        gather_method(it->second);
     }
     for(int i = classes->first(); classes->more(i); i = classes->next(i)) {
         sym_table->enterscope();
         curr_class = classes->nth(i);
         gather_attribute(classes->nth(i));
         Symbol cur_class_name = curr_class->get_name();
-        sym_table->addid(self, new Symbol(cur_class_name));
+        sym_table->addid(self, new Symbol(SELF_TYPE));
         classes->nth(i)->accept(*this);
         sym_table->exitscope();
     }
@@ -531,7 +594,7 @@ Symbol TypeCheckVisitor::visit(attr_class& cls) {
     Symbol init_type = cls.get_init()->accept(*this);
     if (init_type != No_type) {
         if (init_type == SELF_TYPE) init_type = curr_class->get_name();
-        if(!cls_table.is_sub_class(init_type, cls.get_type())) {
+        if(!cls_table.is_sub_class(init_type, cls.get_type(), curr_class)) {
             cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! decl type is not ancestor of init type." << endl;
         }
     }
@@ -543,11 +606,12 @@ Symbol TypeCheckVisitor::visit(method_class& cls) {
     sym_table->enterscope();
     Formals fs = cls.get_formals();
     for (int i = fs->first(); fs->more(i); i = fs->next(i)) {
+        fs->nth(i)->accept(*this);
         Symbol type_decl = fs->nth(i)->get_typedecl();
         sym_table->addid(fs->nth(i)->get_name(), new Symbol(type_decl));
     }
     Symbol s = cls.get_expression()->accept(*this);
-    if (!cls_table.is_sub_class(s, cls.get_returntype())) {
+    if (!cls_table.is_sub_class(s, cls.get_returntype(), curr_class)) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! return type is not ancestor of method body." << endl;
     }
     sym_table->exitscope();
@@ -560,9 +624,9 @@ Symbol TypeCheckVisitor::visit(formal_class& cls) {
     Symbol formal_name = cls.get_name();
     Symbol formal_type = cls.get_typedecl();
     if (cls_table.get_class(formal_type) == NULL) {
-        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! formal type " << formal_type << " can not be found." << endl;
+        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! formal parameter type " << formal_type << " can not be found." << endl;
     } else if (sym_table->probe(formal_name) != NULL) {
-        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! formal name " << formal_name << " duplicated." << endl;
+        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! formal parameter " << formal_name << " is multiply defined." << endl;
     } else if (formal_name == self) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! formal name should not be self." << endl;
     } else {
@@ -582,7 +646,6 @@ Symbol TypeCheckVisitor::visit(object_class& cls) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Use undefined identifier " << name << endl;
         type = Object;
     } else {
-        
         type = *find_type;
     }
     
@@ -644,7 +707,9 @@ Symbol TypeCheckVisitor::visit(eq_class& cls) {
     Symbol lhs_type = cls.get_lhs()->accept(*this);
     Symbol rhs_type = cls.get_rhs()->accept(*this);
     if (lhs_type == Int || lhs_type == Bool || lhs_type == Str || rhs_type == Int || rhs_type == Bool || rhs_type == Str) {
-        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! '=' meets Int or Bool or Str value." << endl;
+        if (lhs_type != rhs_type) {
+            cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! '=' meets different types." << std::endl;
+        }
     }
 
     return cls.set_type(Bool)->get_type();;
@@ -686,7 +751,7 @@ Symbol TypeCheckVisitor::visit(sub_class& cls) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! '-' meets non-Int value." << endl;
     }
 
-    return cls.set_type(Bool)->get_type();
+    return cls.set_type(Int)->get_type();
 }
 
 Symbol TypeCheckVisitor::visit(mul_class& cls) {
@@ -696,7 +761,7 @@ Symbol TypeCheckVisitor::visit(mul_class& cls) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! '*' meets non-Int value." << endl;
     }
 
-    return cls.set_type(Bool)->get_type();
+    return cls.set_type(Int)->get_type();
 }
 
 Symbol TypeCheckVisitor::visit(divide_class& cls) {
@@ -706,7 +771,7 @@ Symbol TypeCheckVisitor::visit(divide_class& cls) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! '/' meets non-Int value." << endl;
     }
 
-    return cls.set_type(Bool)->get_type();
+    return cls.set_type(Int)->get_type();
 }
 
 Symbol TypeCheckVisitor::visit(let_class& cls) {
@@ -717,7 +782,7 @@ Symbol TypeCheckVisitor::visit(let_class& cls) {
 
     Symbol init_type = cls.get_init()->accept(*this);
     Symbol type_decl = cls.get_typedecl();
-    if (init_type != No_type && !cls_table.is_sub_class(init_type, type_decl)) {
+    if (init_type != No_type && !cls_table.is_sub_class(init_type, type_decl, curr_class)) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! init type '" << init_type 
                             << "' is not a derived class of type_decl '" << type_decl << "'." << std::endl;
     }
@@ -745,18 +810,21 @@ Symbol TypeCheckVisitor::visit(typcase_class& cls) {
     cls.get_expr()->accept(*this);
 
     std::unordered_set<Symbol> types;
+    std::unordered_set<Symbol> calc_types;
     Cases cases = cls.get_cases();
     for (int i = cases->first(); cases->more(i); i = cases->next(i)) {
         Symbol type_decl = cases->nth(i)->get_typedecl();
         if (types.find(type_decl) != types.end()) {
             cls_table.semant_error(curr_class->get_filename(), cases->nth(i)) <<
                                  "Error! type '" << type_decl << "' duplicated." << std::endl;
+            return cls.set_type(Object)->get_type();
         }
         Symbol type = cases->nth(i)->accept(*this);
-        types.insert(type);
+        types.insert(type_decl);
+        calc_types.insert(type);
     }
 
-    Symbol ancestorType = cls_table.find_lowest_common_ancestor(Object, types);
+    Symbol ancestorType = cls_table.find_lowest_common_ancestor(Object, calc_types);
     return cls.set_type(ancestorType)->get_type();
 }
 
@@ -806,20 +874,17 @@ Symbol TypeCheckVisitor::visit(cond_class& cls) {
 Symbol TypeCheckVisitor::visit(dispatch_class& cls) {
     Symbol expr_type = cls.get_expression()->accept(*this);
 
-    if (expr_type == SELF_TYPE) {
-        expr_type = curr_class->get_name();
-    }
-
-    auto it = method_tables.find(expr_type);
+    Symbol casted_expr = (expr_type == SELF_TYPE ? curr_class->get_name() : expr_type);
+    auto it = method_tables.find(casted_expr);
     if (it == method_tables.end()) {
-        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! there is no class named " << expr_type << "." << endl;
+        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! there is no class named " << casted_expr << "." << endl;
         return cls.set_type(Object)->get_type();
     }
 
-    method_class* method = get_closest_method(cls_table.get_class(expr_type), cls.get_name());
+    method_class* method = get_closest_method(cls_table.get_class(casted_expr), cls.get_name());
     if (method == NULL) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! there is no method " << cls.get_name() << " in class " 
-        << expr_type << "." << endl;
+        << casted_expr << "." << endl;
         return cls.set_type(Object)->get_type();
     }
 
@@ -833,7 +898,7 @@ Symbol TypeCheckVisitor::visit(dispatch_class& cls) {
 
     for (int i = exprs->first(); exprs->more(i); i = exprs->next(i)) {
         Symbol expr_type = exprs->nth(i)->accept(*this);
-        if (!cls_table.is_sub_class(expr_type, formals->nth(i)->get_typedecl())) {
+        if (!cls_table.is_sub_class(expr_type, formals->nth(i)->get_typedecl(), curr_class)) {
             cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! " << i << "'th actual parameter is not match with formal parameters" << endl;
             return cls.set_type(Object)->get_type();
         }
@@ -848,27 +913,25 @@ Symbol TypeCheckVisitor::visit(dispatch_class& cls) {
 }
 
 Symbol TypeCheckVisitor::visit(static_dispatch_class& cls) {
-  Symbol expr_type = cls.get_expression()->accept(*this);
+    Symbol expr_type = cls.get_expression()->accept(*this);
 
-    if (expr_type == SELF_TYPE) {
-        expr_type = curr_class->get_name();
-    }
+    Symbol casted_expr = (expr_type == SELF_TYPE ? curr_class->get_name() : expr_type);
 
-    if (!cls_table.is_sub_class(expr_type, cls.get_typename())) {
+    if (!cls_table.is_sub_class(casted_expr, cls.get_typename(), curr_class)) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! static dispatch class is not an ancestor." << endl;
         return cls.set_type(Object)->get_type();
     }
 
     auto it = method_tables.find(cls.get_typename());
     if (it == method_tables.end()) {
-        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! there is no class named " << expr_type << "." << endl;
+        cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! there is no class named " << casted_expr << "." << endl;
         return cls.set_type(Object)->get_type();
     }
 
-    method_class* method = get_closest_method(cls_table.get_class(expr_type), cls.get_name());
+    method_class* method = get_closest_method(cls_table.get_class(casted_expr), cls.get_name());
     if (method == NULL) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! there is no method " << cls.get_name() << " in class " 
-        << expr_type << "." << endl;
+        << casted_expr << "." << endl;
         return cls.set_type(Object)->get_type();
     }
 
@@ -882,7 +945,7 @@ Symbol TypeCheckVisitor::visit(static_dispatch_class& cls) {
 
     for (int i = exprs->first(); exprs->more(i); i = exprs->next(i)) {
         Symbol expr_type = exprs->nth(i)->accept(*this);
-        if (!cls_table.is_sub_class(expr_type, formals->nth(i)->get_typedecl())) {
+        if (!cls_table.is_sub_class(expr_type, formals->nth(i)->get_typedecl(), curr_class)) {
             cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! " << i << "'th actual parameter is not match with formal parameters" << endl;
             return cls.set_type(Object)->get_type();
         }
@@ -897,6 +960,10 @@ Symbol TypeCheckVisitor::visit(static_dispatch_class& cls) {
 }
 
 Symbol TypeCheckVisitor::visit(assign_class& cls) {
+    if (cls.get_name() == self) {
+        cls_table.semant_error(curr_class->get_filename(), &cls) << "Cannot assign to 'self'." << endl;
+        return cls.set_type(SELF_TYPE)->get_type();
+    }
     Symbol* type = sym_table->lookup(cls.get_name());
     if (type == NULL) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! " << cls.get_name() << " is undefined." << endl;
@@ -904,7 +971,7 @@ Symbol TypeCheckVisitor::visit(assign_class& cls) {
     }
 
     Symbol expr_type = cls.get_expression()->accept(*this);
-    if (!cls_table.is_sub_class(expr_type, *type)) {
+    if (!cls_table.is_sub_class(expr_type, *type, curr_class)) {
         cls_table.semant_error(curr_class->get_filename(), &cls) << "Error! " << *type << " is not the ancestor of the rhs expression." << endl;
         return cls.set_type(Object)->get_type();
     }
